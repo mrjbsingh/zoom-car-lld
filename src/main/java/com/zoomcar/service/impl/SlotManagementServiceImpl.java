@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,9 +45,15 @@ public class SlotManagementServiceImpl implements SlotManagementService {
                                                            LocalDateTime endTime) {
         log.debug("Attempting to lock slots for vehicle: {} from {} to {}", vehicleId, startTime, endTime);
         
-        // Find all available slots in the time range using existing repository method
+        // Convert LocalDateTime to LocalDate and hour for repository call
+        LocalDate startDate = startTime.toLocalDate();
+        LocalDate endDate = endTime.toLocalDate();
+        Integer startHour = startTime.getHour();
+        Integer endHour = endTime.getHour();
+        
+        // Find all available slots in the time range using corrected repository method
         List<VehicleAvailabilitySlot> availableSlots = slotRepository
-            .findAvailableSlotsByVehicleAndTimeRange(vehicleId, startTime, endTime);
+            .findAvailableSlotsByVehicleAndTimeRange(vehicleId, startDate, startHour, endDate, endHour);
         
         if (availableSlots.isEmpty()) {
             log.warn("No available slots found for vehicle: {} in time range {} to {}", 

@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -21,46 +22,50 @@ import java.util.UUID;
 public interface VehicleAvailabilitySlotRepository extends JpaRepository<VehicleAvailabilitySlot, UUID> {
 
     /**
-     * Find available slot for a specific vehicle and time range
+     * Find available slot for a specific vehicle, date and hour
      * Critical query for booking - uses optimistic locking
      */
     @Query("SELECT vas FROM VehicleAvailabilitySlot vas " +
            "WHERE vas.vehicleId = :vehicleId " +
-           "AND vas.slotStartTime = :slotStartTime " +
-           "AND vas.slotEndTime = :slotEndTime " +
+           "AND vas.date = :date " +
+           "AND vas.hourSlot = :hourSlot " +
            "AND vas.isAvailable = true")
     Optional<VehicleAvailabilitySlot> findAvailableSlot(@Param("vehicleId") UUID vehicleId,
-                                                       @Param("slotStartTime") LocalDateTime slotStartTime,
-                                                       @Param("slotEndTime") LocalDateTime slotEndTime);
+                                                       @Param("date") LocalDate date,
+                                                       @Param("hourSlot") Integer hourSlot);
 
     /**
-     * Find all available slots for a vehicle within a time range
+     * Find all available slots for a vehicle within a date and hour range
      * Used for availability checking and slot management
      */
     @Query("SELECT vas FROM VehicleAvailabilitySlot vas " +
            "WHERE vas.vehicleId = :vehicleId " +
-           "AND vas.slotStartTime >= :startTime " +
-           "AND vas.slotEndTime <= :endTime " +
+           "AND ((vas.date = :startDate AND vas.hourSlot >= :startHour) OR vas.date > :startDate) " +
+           "AND ((vas.date = :endDate AND vas.hourSlot <= :endHour) OR vas.date < :endDate) " +
            "AND vas.isAvailable = true " +
-           "ORDER BY vas.slotStartTime ASC")
+           "ORDER BY vas.date ASC, vas.hourSlot ASC")
     List<VehicleAvailabilitySlot> findAvailableSlotsByVehicleAndTimeRange(
             @Param("vehicleId") UUID vehicleId,
-            @Param("startTime") LocalDateTime startTime,
-            @Param("endTime") LocalDateTime endTime);
+            @Param("startDate") LocalDate startDate,
+            @Param("startHour") Integer startHour,
+            @Param("endDate") LocalDate endDate,
+            @Param("endHour") Integer endHour);
 
     /**
-     * Find all slots for a vehicle within a time range (available and booked)
+     * Find all slots for a vehicle within a date and hour range (available and booked)
      * Used for slot management and analytics
      */
     @Query("SELECT vas FROM VehicleAvailabilitySlot vas " +
            "WHERE vas.vehicleId = :vehicleId " +
-           "AND vas.slotStartTime >= :startTime " +
-           "AND vas.slotEndTime <= :endTime " +
-           "ORDER BY vas.slotStartTime ASC")
+           "AND ((vas.date = :startDate AND vas.hourSlot >= :startHour) OR vas.date > :startDate) " +
+           "AND ((vas.date = :endDate AND vas.hourSlot <= :endHour) OR vas.date < :endDate) " +
+           "ORDER BY vas.date ASC, vas.hourSlot ASC")
     List<VehicleAvailabilitySlot> findSlotsByVehicleAndTimeRange(
             @Param("vehicleId") UUID vehicleId,
-            @Param("startTime") LocalDateTime startTime,
-            @Param("endTime") LocalDateTime endTime);
+            @Param("startDate") LocalDate startDate,
+            @Param("startHour") Integer startHour,
+            @Param("endDate") LocalDate endDate,
+            @Param("endHour") Integer endHour);
 
     /**
      * Book a slot with optimistic locking
