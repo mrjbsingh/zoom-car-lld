@@ -785,3 +785,50 @@ All repository interfaces are now complete and ready for service layer implement
 8. **RESTful API Design** - Standard HTTP methods and status codes
 
 The service layer and API controllers are now production-ready with enterprise-grade patterns for scalability, maintainability, and extensibility.
+
+### Temporary reservation (preventing UI race conditions)
+
+// Temporary reservation fields for preventing UI race conditions @Column(name = "reserved_until") private Instant reservedUntil;
+This is a neat approach 👍. Let me expand on what’s happening here.
+
+```java
+// Temporary reservation fields for preventing UI race conditions
+@Column(name = "reserved_until")
+private Instant reservedUntil;
+```
+
+### Purpose
+
+* `reservedUntil` acts as a **soft lock** (a temporary reservation) on a resource.
+* Instead of immediately committing a permanent change in the DB, you "reserve" the entity for a short time to prevent **UI race conditions** (e.g., two users clicking “Book” at the same time).
+
+### How it works
+
+1. When a user starts an action (say, booking a ticket), the system sets `reservedUntil = now() + X seconds`.
+2. Other requests that come in check:
+
+   ```sql
+   WHERE reserved_until IS NULL OR reserved_until < now()
+   ```
+
+   → This ensures only unreserved or expired reservations can be taken.
+3. If the reservation succeeds, the row is temporarily "locked" for that user until either:
+
+   * The actual operation is confirmed (then `reserved_until` is cleared or replaced with a final booking status), or
+   * The reservation times out (`reserved_until` passes), freeing the resource.
+
+### Why it helps
+
+* Prevents **double booking** or **duplicate selection** in UI when multiple users click quickly.
+* Avoids **long-lived DB locks** (`SELECT FOR UPDATE`) that can block or deadlock.
+* Adds a **time-based expiry**, so resources don’t get stuck forever if the UI crashes.
+
+### Things to watch out for
+
+* **Clock drift**: If app servers and DB clocks differ, reservations may expire too early/late → better to always use DB time (`NOW()` in SQL) instead of application `Instant.now()`.
+* **Cleanup**: You’ll need a background job or a natural expiry check in queries (no need to manually nullify expired ones, just filter them out).
+* **Indexing**: Add an index on `reserved_until` if this column is used in queries often.
+
+---
+
+👉 Do you want me to also sketch how you’d **enforce this at query level** (like with a `WHERE reserved_until < now()` clause) so that the DB guarantees no two reservations overlap?
