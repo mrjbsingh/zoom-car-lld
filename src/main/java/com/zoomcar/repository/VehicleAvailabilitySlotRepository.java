@@ -36,13 +36,17 @@ public interface VehicleAvailabilitySlotRepository extends JpaRepository<Vehicle
 
     /**
      * Find all available slots for a vehicle within a date and hour range
+     * Includes slots with expired reservations (payment failed/timeout scenarios)
      * Used for availability checking and slot management
      */
     @Query("SELECT vas FROM VehicleAvailabilitySlot vas " +
            "WHERE vas.vehicleId = :vehicleId " +
            "AND ((vas.date = :startDate AND vas.hourSlot >= :startHour) OR vas.date > :startDate) " +
            "AND ((vas.date = :endDate AND vas.hourSlot <= :endHour) OR vas.date < :endDate) " +
-           "AND vas.isAvailable = true " +
+           "AND (vas.isAvailable = true " +
+           "     OR (vas.bookingId IS NULL " +
+           "         AND vas.reservedUntil IS NOT NULL " +
+           "         AND vas.reservedUntil < CURRENT_TIMESTAMP)) " +
            "ORDER BY vas.date ASC, vas.hourSlot ASC")
     List<VehicleAvailabilitySlot> findAvailableSlotsByVehicleAndTimeRange(
             @Param("vehicleId") UUID vehicleId,
@@ -86,11 +90,14 @@ public interface VehicleAvailabilitySlotRepository extends JpaRepository<Vehicle
 
     /**
      * Confirm slot booking with optimistic locking
+     * Clears temporary reservation fields and sets permanent booking ID
      * Returns 1 if successful, 0 if version mismatch (concurrent modification)
      */
     @Modifying
     @Query("UPDATE VehicleAvailabilitySlot vas " +
            "SET vas.bookingId = :bookingId, " +
+           "    vas.reservedUntil = null, " +
+           "    vas.reservedBySession = null, " +
            "    vas.versionNumber = vas.versionNumber + 1 " +
            "WHERE vas.slotId = :slotId " +
            "AND vas.versionNumber = :expectedVersion")
@@ -119,6 +126,32 @@ public interface VehicleAvailabilitySlotRepository extends JpaRepository<Vehicle
     @Query("SELECT vas FROM VehicleAvailabilitySlot vas " +
            "WHERE vas.bookingId = :bookingId")
     List<VehicleAvailabilitySlot> findSlotsByBookingId(@Param("bookingId") UUID bookingId);
+
+    /**
+     * Clean up expired reservations (payment failed/timeout scenarios)
+     * Sets slots back to available when reservation time expires
+     * Returns number of slots cleaned up
+     */
+    @Modifying
+    @Query("UPDATE VehicleAvailabilitySlot vas " +
+           "SET vas.isAvailable = true, " +
+           "    vas.reservedUntil = null, " +
+           "    vas.reservedBySession = null, " +
+           "    vas.versionNumber = vas.versionNumber + 1 " +
+           "WHERE vas.bookingId IS NULL " +
+           "AND vas.reservedUntil IS NOT NULL " +
+           "AND vas.reservedUntil < CURRENT_TIMESTAMP")
+    int cleanupExpiredReservations();
+
+    /**
+     * Find all expired reservations for monitoring/logging
+     * Used to track payment failures and timeout scenarios
+     */
+    @Query("SELECT vas FROM VehicleAvailabilitySlot vas " +
+           "WHERE vas.bookingId IS NULL " +
+           "AND vas.reservedUntil IS NOT NULL " +
+           "AND vas.reservedUntil < CURRENT_TIMESTAMP")
+    List<VehicleAvailabilitySlot> findExpiredReservations();
 
     /**
      * Count available slots for a vehicle in a time range

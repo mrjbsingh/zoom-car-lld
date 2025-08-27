@@ -255,6 +255,29 @@ public class SlotManagementServiceImpl implements SlotManagementService {
         }
     }
 
+    /**
+     * Optional: Periodic cleanup for database maintenance (runs infrequently)
+     * This is purely for database hygiene - not required for functionality
+     * since expired reservations are filtered out at query time
+     */
+    @Scheduled(cron = "0 0 3 * * ?") // Run daily at 3 AM (very low frequency)
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void periodicDatabaseMaintenance() {
+        log.debug("Starting periodic database maintenance");
+        
+        try {
+            // Optional: Clean up very old expired reservations for database hygiene
+            // This is not critical since queries filter them out naturally
+            int cleanedSlots = slotRepository.cleanupExpiredReservations();
+            
+            if (cleanedSlots > 0) {
+                log.info("Database maintenance: cleaned up {} old expired reservations", cleanedSlots);
+            }
+        } catch (Exception e) {
+            log.error("Error during periodic database maintenance", e);
+        }
+    }
+
     // Private helper method for releasing temporary locks
     private void releaseTemporaryLocks(List<VehicleAvailabilitySlot> lockedSlots) {
         for (VehicleAvailabilitySlot slot : lockedSlots) {
