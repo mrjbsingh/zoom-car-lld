@@ -61,13 +61,27 @@ public class SlotManagementServiceImpl implements SlotManagementService {
             throw new OptimisticLockingException("No available slots found for the requested time range");
         }
         
-        // Lock all slots atomically
+        // Lock all slots atomically using optimistic locking
         List<VehicleAvailabilitySlot> lockedSlots = new ArrayList<>();
         for (VehicleAvailabilitySlot slot : availableSlots) {
-            // Set availability to false (using Lombok generated setter)
-            slot.setIsAvailable(false);
-            VehicleAvailabilitySlot savedSlot = slotRepository.save(slot);
-            lockedSlots.add(savedSlot);
+            // Use repository's optimistic locking method
+            int lockResult = slotRepository.bookSlotWithOptimisticLock(
+                slot.getSlotId(), 
+                null, // No booking ID yet - this is just a temporary lock
+                LocalDateTime.now(), 
+                slot.getVersionNumber()
+            );
+            
+            if (lockResult == 0) {
+                // Version conflict - release already locked slots and throw exception
+                releaseTemporaryLocks(lockedSlots);
+                throw new OptimisticLockingException("Slot booking conflict detected. Please try again.");
+            }
+            
+            // Reload the slot to get updated version number
+            VehicleAvailabilitySlot updatedSlot = slotRepository.findById(slot.getSlotId())
+                .orElseThrow(() -> new OptimisticLockingException("Slot not found after locking"));
+            lockedSlots.add(updatedSlot);
             
             log.debug("Locked slot for vehicle: {}", vehicleId);
         }
@@ -77,7 +91,9 @@ public class SlotManagementServiceImpl implements SlotManagementService {
     }
 
     /**
-     * Confirm slot booking after successful booking creation.
+     * Confirm slot booking after successful booking creation with optimistic locking.
+     * This method ensures that slots haven't been modified by concurrent operations
+     * between locking and confirmation phases.
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
@@ -85,14 +101,44 @@ public class SlotManagementServiceImpl implements SlotManagementService {
     public void confirmSlotBooking(List<VehicleAvailabilitySlot> slots, UUID bookingId) {
         log.debug("Confirming booking for {} slots with booking ID: {}", slots.size(), bookingId);
         
-        for (VehicleAvailabilitySlot slot : slots) {
-            slot.setBookingId(bookingId);
-            slotRepository.save(slot);
-            
-            log.debug("Confirmed slot for booking: {}", bookingId);
-        }
+        List<VehicleAvailabilitySlot> confirmedSlots = new ArrayList<>();
         
-        log.info("Successfully confirmed {} slots for booking: {}", slots.size(), bookingId);
+        try {
+            for (VehicleAvailabilitySlot slot : slots) {
+                // Use optimistic locking to confirm the booking
+                int updateResult = slotRepository.confirmSlotBookingWithOptimisticLock(
+                    slot.getSlotId(), 
+                    bookingId, 
+                    slot.getVersionNumber()
+                );
+                
+                if (updateResult == 0) {
+                    // Version conflict detected - rollback all confirmed slots
+                    rollbackConfirmedSlots(confirmedSlots);
+                    throw new OptimisticLockingException(
+                        "Slot confirmation conflict detected for booking: " + bookingId + 
+                        ". Slot may have been modified by another operation."
+                    );
+                }
+                
+                // Reload the slot to get updated version number
+                VehicleAvailabilitySlot confirmedSlot = slotRepository.findById(slot.getSlotId())
+                    .orElseThrow(() -> new OptimisticLockingException("Slot not found after confirmation"));
+                confirmedSlots.add(confirmedSlot);
+                
+                log.debug("Confirmed slot {} for booking: {}", slot.getSlotId(), bookingId);
+            }
+            
+            log.info("Successfully confirmed {} slots for booking: {}", confirmedSlots.size(), bookingId);
+            
+        } catch (OptimisticLockingException e) {
+            log.error("Failed to confirm booking {} due to optimistic locking conflict", bookingId, e);
+            throw e;
+        } catch (Exception e) {
+            log.error("Unexpected error during booking confirmation for booking: {}", bookingId, e);
+            rollbackConfirmedSlots(confirmedSlots);
+            throw new OptimisticLockingException("Failed to confirm booking due to unexpected error", e);
+        }
     }
 
     /**
@@ -207,5 +253,32 @@ public class SlotManagementServiceImpl implements SlotManagementService {
             log.error("Error during slot cleanup", e);
             return 0;
         }
+    }
+
+    // Private helper method for releasing temporary locks
+    private void releaseTemporaryLocks(List<VehicleAvailabilitySlot> lockedSlots) {
+        for (VehicleAvailabilitySlot slot : lockedSlots) {
+            try {
+                slotRepository.releaseSlotWithOptimisticLock(slot.getSlotId(), slot.getVersionNumber());
+                log.debug("Released temporary lock for slot: {}", slot.getSlotId());
+            } catch (Exception e) {
+                log.error("Failed to release temporary lock for slot: {}", slot.getSlotId(), e);
+            }
+        }
+    }
+    
+    // Private helper method for rolling back confirmed slots in case of conflicts
+    private void rollbackConfirmedSlots(List<VehicleAvailabilitySlot> confirmedSlots) {
+        for (VehicleAvailabilitySlot slot : confirmedSlots) {
+            try {
+                // Reset booking ID and make slot available again
+                slotRepository.releaseSlotWithOptimisticLock(slot.getSlotId(), slot.getVersionNumber());
+                log.debug("Rolled back confirmed slot: {}", slot.getSlotId());
+            } catch (Exception e) {
+                log.error("Failed to rollback confirmed slot: {}", slot.getSlotId(), e);
+                // Continue with other slots even if one fails
+            }
+        }
+        log.warn("Rolled back {} confirmed slots due to optimistic locking conflict", confirmedSlots.size());
     }
 }

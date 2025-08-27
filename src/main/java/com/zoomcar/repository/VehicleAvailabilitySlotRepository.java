@@ -75,15 +75,28 @@ public interface VehicleAvailabilitySlotRepository extends JpaRepository<Vehicle
     @Query("UPDATE VehicleAvailabilitySlot vas " +
            "SET vas.isAvailable = false, " +
            "    vas.bookingId = :bookingId, " +
-           "    vas.bookedAt = :bookedAt, " +
            "    vas.versionNumber = vas.versionNumber + 1 " +
-           "WHERE vas.id = :slotId " +
+           "WHERE vas.slotId = :slotId " +
            "AND vas.versionNumber = :expectedVersion " +
            "AND vas.isAvailable = true")
     int bookSlotWithOptimisticLock(@Param("slotId") UUID slotId,
                                   @Param("bookingId") UUID bookingId,
                                   @Param("bookedAt") LocalDateTime bookedAt,
                                   @Param("expectedVersion") Long expectedVersion);
+
+    /**
+     * Confirm slot booking with optimistic locking
+     * Returns 1 if successful, 0 if version mismatch (concurrent modification)
+     */
+    @Modifying
+    @Query("UPDATE VehicleAvailabilitySlot vas " +
+           "SET vas.bookingId = :bookingId, " +
+           "    vas.versionNumber = vas.versionNumber + 1 " +
+           "WHERE vas.slotId = :slotId " +
+           "AND vas.versionNumber = :expectedVersion")
+    int confirmSlotBookingWithOptimisticLock(@Param("slotId") UUID slotId,
+                                           @Param("bookingId") UUID bookingId,
+                                           @Param("expectedVersion") Long expectedVersion);
 
     /**
      * Release a slot (cancel booking) with optimistic locking
@@ -93,9 +106,8 @@ public interface VehicleAvailabilitySlotRepository extends JpaRepository<Vehicle
     @Query("UPDATE VehicleAvailabilitySlot vas " +
            "SET vas.isAvailable = true, " +
            "    vas.bookingId = null, " +
-           "    vas.bookedAt = null, " +
            "    vas.versionNumber = vas.versionNumber + 1 " +
-           "WHERE vas.id = :slotId " +
+           "WHERE vas.slotId = :slotId " +
            "AND vas.versionNumber = :expectedVersion")
     int releaseSlotWithOptimisticLock(@Param("slotId") UUID slotId,
                                      @Param("expectedVersion") Long expectedVersion);
