@@ -81,11 +81,10 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
      */
     @Modifying
     @Query("UPDATE Booking b SET b.status = :status, b.updatedAt = :updatedAt " +
-           "WHERE b.id = :bookingId AND b.versionNumber = :expectedVersion")
+           "WHERE b.bookingId = :bookingId")
     int updateBookingStatus(@Param("bookingId") UUID bookingId,
                            @Param("status") BookingStatus status,
-                           @Param("updatedAt") LocalDateTime updatedAt,
-                           @Param("expectedVersion") Long expectedVersion);
+                           @Param("updatedAt") LocalDateTime updatedAt);
 
     /**
      * Find bookings that need to be marked as ONGOING

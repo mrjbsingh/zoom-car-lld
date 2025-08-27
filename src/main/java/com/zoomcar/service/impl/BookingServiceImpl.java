@@ -22,7 +22,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -108,7 +110,7 @@ public class BookingServiceImpl implements BookingService {
         booking = bookingRepository.save(booking);
         
         // 5. Update slots with optimistic locking
-        slotManagementService.confirmSlotBooking(availableSlots, booking.getId());
+        slotManagementService.confirmSlotBooking(availableSlots, booking.getBookingId());
         
         // 6. Update denormalized availability data
         slotManagementService.updateAggregatedAvailability(
@@ -117,7 +119,7 @@ public class BookingServiceImpl implements BookingService {
         // 7. Clear caches
         clearAvailabilityCaches(request.getVehicleId());
         
-        log.info("Booking created successfully: {} for user {}", booking.getId(), request.getUserId());
+        log.info("Booking created successfully: {} for user {}", booking.getBookingId(), request.getUserId());
         
         return mapToBookingResponse(booking);
     }
@@ -164,7 +166,6 @@ public class BookingServiceImpl implements BookingService {
         
         // Update booking status
         booking.setStatus(BookingStatus.CANCELLED);
-        booking.setUpdatedAt(LocalDateTime.now());
         booking = bookingRepository.save(booking);
         
         // Release slots
@@ -172,7 +173,7 @@ public class BookingServiceImpl implements BookingService {
         
         // Update aggregated availability
         slotManagementService.updateAggregatedAvailability(
-            booking.getVehicleId(), booking.getStartTime(), booking.getEndTime());
+            booking.getVehicleId(), toLocalDateTime(booking.getStartTime()), toLocalDateTime(booking.getEndTime()));
         
         // Clear caches
         clearAvailabilityCaches(booking.getVehicleId());
@@ -192,13 +193,13 @@ public class BookingServiceImpl implements BookingService {
         // Validate status transition
         validateStatusTransition(booking.getStatus(), newStatus);
         
-        // Update status
+        // Update status using repository method
         int updated = bookingRepository.updateBookingStatus(
-            bookingId, newStatus, LocalDateTime.now(), booking.getVersionNumber());
+            bookingId, newStatus, LocalDateTime.now());
         
         if (updated == 0) {
             throw new OptimisticLockingException("Booking", bookingId.toString(), 
-                booking.getVersionNumber(), null);
+                null, null);
         }
         
         // Refresh entity
@@ -264,67 +265,54 @@ public class BookingServiceImpl implements BookingService {
     
     private Booking createBookingEntity(BookingRequest request, PricingService.PricingResult pricingResult) {
         return Booking.builder()
-            .id(UUID.randomUUID())
-            .bookingReference(generateBookingReference())
+            .bookingId(UUID.randomUUID())
             .userId(request.getUserId())
             .vehicleId(request.getVehicleId())
             .pickupHubId(request.getPickupHubId())
             .dropHubId(request.getDropHubId())
-            .startTime(request.getStartTime())
-            .endTime(request.getEndTime())
+            .startTime(toInstant(request.getStartTime()))
+            .endTime(toInstant(request.getEndTime()))
             .bookingType(request.getBookingType())
-            .status(BookingStatus.PENDING)
-            .baseAmount(pricingResult.getBaseAmount())
-            .taxAmount(pricingResult.getTaxAmount())
+            .status(BookingStatus.CONFIRMED)
             .totalAmount(pricingResult.getTotalAmount())
-            .specialRequests(request.getSpecialRequests())
-            .promoCode(request.getPromoCode())
-            .discountAmount(pricingResult.getDiscountAmount())
-            .createdAt(LocalDateTime.now())
-            .updatedAt(LocalDateTime.now())
-            .versionNumber(1L)
+            .securityDeposit(pricingResult.getBaseAmount()) // Using base amount as security deposit for now
             .build();
     }
     
     private void validateBookingCancellation(Booking booking, UUID userId) {
         if (!booking.getUserId().equals(userId)) {
             throw new BookingCancellationNotAllowedException(
-                booking.getId(), booking.getStatus(), "User not authorized to cancel this booking");
+                booking.getBookingId(), booking.getStatus(), "User not authorized to cancel this booking");
         }
         
         if (booking.getStatus() == BookingStatus.CANCELLED) {
             throw new BookingCancellationNotAllowedException(
-                booking.getId(), booking.getStatus(), "Booking is already cancelled");
+                booking.getBookingId(), booking.getStatus(), "Booking is already cancelled");
         }
         
         if (booking.getStatus() == BookingStatus.COMPLETED) {
             throw new BookingCancellationNotAllowedException(
-                booking.getId(), booking.getStatus(), "Cannot cancel completed booking");
+                booking.getBookingId(), booking.getStatus(), "Cannot cancel completed booking");
         }
         
         // Check cancellation time limits
-        if (booking.getStartTime().isBefore(LocalDateTime.now().plusHours(2))) {
+        if (toLocalDateTime(booking.getStartTime()).isBefore(LocalDateTime.now().plusHours(2))) {
             throw new BookingCancellationNotAllowedException(
-                booking.getId(), booking.getStatus(), "Cannot cancel booking less than 2 hours before start time");
+                booking.getBookingId(), booking.getStatus(), "Cannot cancel booking less than 2 hours before start time");
         }
     }
     
     private void validateStatusTransition(BookingStatus currentStatus, BookingStatus newStatus) {
         // Define valid transitions
         boolean isValidTransition = switch (currentStatus) {
-            case PENDING -> newStatus == BookingStatus.CONFIRMED || newStatus == BookingStatus.CANCELLED;
-            case CONFIRMED -> newStatus == BookingStatus.ONGOING || newStatus == BookingStatus.CANCELLED;
-            case ONGOING -> newStatus == BookingStatus.COMPLETED;
+            case CONFIRMED -> newStatus == BookingStatus.ACTIVE || newStatus == BookingStatus.CANCELLED;
+            case ACTIVE -> newStatus == BookingStatus.COMPLETED;
             case COMPLETED, CANCELLED -> false; // Terminal states
         };
         
         if (!isValidTransition) {
             throw new InvalidStatusTransitionException(null, currentStatus, newStatus);
         }
-    }
-    
-    private String generateBookingReference() {
-        return "ZC" + System.currentTimeMillis() + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
     }
     
     private void clearAvailabilityCaches(UUID vehicleId) {
@@ -334,33 +322,34 @@ public class BookingServiceImpl implements BookingService {
     
     private BookingResponse mapToBookingResponse(Booking booking) {
         return BookingResponse.builder()
-            .bookingId(booking.getId())
+            .bookingId(booking.getBookingId())
             .bookingReference(booking.getBookingReference())
             .userId(booking.getUserId())
             .userName(booking.getUserName())
             .vehicleId(booking.getVehicleId())
-            .vehicleRegistrationNumber(booking.getVehicleRegistrationNumber())
+            .vehicleRegistrationNumber(booking.getVehicleRegistration())
             .vehicleModel(booking.getVehicleModel())
             .vehicleBrand(booking.getVehicleBrand())
-            .categoryName(booking.getCategoryName())
             .pickupHubId(booking.getPickupHubId())
             .pickupHubName(booking.getPickupHubName())
-            .pickupHubAddress(booking.getPickupHubAddress())
             .dropHubId(booking.getDropHubId())
             .dropHubName(booking.getDropHubName())
-            .dropHubAddress(booking.getDropHubAddress())
-            .startTime(booking.getStartTime())
-            .endTime(booking.getEndTime())
+            .startTime(toLocalDateTime(booking.getStartTime()))
+            .endTime(toLocalDateTime(booking.getEndTime()))
             .bookingType(booking.getBookingType())
             .status(booking.getStatus())
-            .baseAmount(booking.getBaseAmount())
-            .taxAmount(booking.getTaxAmount())
             .totalAmount(booking.getTotalAmount())
-            .specialRequests(booking.getSpecialRequests())
-            .promoCode(booking.getPromoCode())
-            .discountAmount(booking.getDiscountAmount())
-            .createdAt(booking.getCreatedAt())
-            .updatedAt(booking.getUpdatedAt())
+            .createdAt(toLocalDateTime(booking.getCreatedAt()))
+            .updatedAt(toLocalDateTime(booking.getUpdatedAt()))
             .build();
+    }
+    
+    // Utility methods for time conversion
+    private Instant toInstant(LocalDateTime localDateTime) {
+        return localDateTime.atZone(ZoneId.systemDefault()).toInstant();
+    }
+    
+    private LocalDateTime toLocalDateTime(Instant instant) {
+        return instant.atZone(ZoneId.systemDefault()).toLocalDateTime();
     }
 }
